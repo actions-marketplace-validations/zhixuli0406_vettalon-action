@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/brand/vettalon-action-readme-banner.png" alt="Vettalon Action: security scanning in GitHub Actions, with SARIF reports and optional AI review" width="880">
+</p>
+
 # Vettalon security scan
 
 A GitHub Action that checks your repository for security problems on every push and pull request, and shows the results as GitHub code scanning alerts.

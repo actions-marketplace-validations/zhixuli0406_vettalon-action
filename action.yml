@@ -2,6 +2,11 @@ name: Vettalon security scan
 description: Scan a repository with the open-source Vettalon CLI (semgrep + gitleaks) and upload SARIF to GitHub code scanning.
 author: Dudu Technology Ltd.
 
+# Marketplace badge. GitHub only allows Feather icon names and a fixed color
+# set, so the brand teal (#0C7580) cannot be used as is: blue is the nearest
+# allowed hue (green is twice as far off and reads as "passed"), and the
+# Feather shield says "security" at badge size; no Feather glyph resembles
+# the Vettalon V mark.
 branding:
   icon: shield
   color: blue

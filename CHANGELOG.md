@@ -6,6 +6,14 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- README opens with the new Vettalon Action banner (Dudu C1 identity: the V
+  mark in navy and teal `#0C7580`), stored at
+  `docs/assets/brand/vettalon-action-readme-banner.png`. The Marketplace
+  badge stays `shield` / `blue`: GitHub's fixed color set has no teal, and
+  blue is the closest allowed hue.
+
 ## [1.0.0] - 2026-10-15
 
 ### Added
