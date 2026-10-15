@@ -1,0 +1,5 @@
+# Semgrep skips test/ and tests/ by default. This repository keeps its
+# deliberately vulnerable self-test fixture under test/fixture/, so this file
+# replaces the default ignore list with one that still scans test/.
+.git/
+node_modules/

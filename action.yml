@@ -1,0 +1,160 @@
+name: Vettalon security scan
+description: Scan a repository with the open-source Vettalon CLI (semgrep + gitleaks) and upload SARIF to GitHub code scanning.
+author: Dudu Technology Ltd.
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  version:
+    description: Vettalon CLI version to install, "latest" or a release tag such as v0.1.0.
+    required: false
+    default: latest
+  path:
+    description: Directory to scan, relative to the workspace.
+    required: false
+    default: .
+  profile:
+    description: '"quick" runs the open-source scanners only (no network, no AI). "deep" adds AI review and needs a model config plus your own API keys.'
+    required: false
+    default: quick
+  fail-on:
+    description: Fail the job when a finding is at or above this severity (critical, high, medium, low, info) or "none". Leave empty to use the CLI default (high, or none when gates are set).
+    required: false
+    default: high
+  gates:
+    description: Policy gate conditions, one per line, passed as repeated --gate flags. Blank lines and lines starting with # are ignored.
+    required: false
+    default: ''
+  config:
+    description: Path to a vettalon model config (TOML) for the deep profile. It must be outside the scanned directory, for example under runner.temp.
+    required: false
+    default: ''
+  sarif-file:
+    description: Where to write the SARIF report.
+    required: false
+    default: vettalon.sarif
+  upload-sarif:
+    description: Upload the SARIF report to GitHub code scanning (needs security-events write permission).
+    required: false
+    default: 'true'
+  category:
+    description: Code scanning category for the upload. Set a distinct value when one workflow scans several paths, so the uploads do not replace each other.
+    required: false
+    default: ''
+  install-scanners:
+    description: Install semgrep and gitleaks if they are not already on PATH.
+    required: false
+    default: 'true'
+  install-method:
+    description: '"release" downloads a prebuilt binary and falls back to building from source when no release asset exists; "source" always builds with cargo install.'
+    required: false
+    default: release
+
+outputs:
+  sarif-file:
+    description: Path of the SARIF report (empty when the scan produced none).
+    value: ${{ steps.scan.outputs.sarif-file }}
+  exit-code:
+    description: Exit code of vettalon scan. 0 = passed, 1 = fail-on or a gate was hit, 2 = the scan could not run.
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check runner OS
+      shell: bash
+      env:
+        RUNNER_OS_NAME: ${{ runner.os }}
+      run: |
+        if [[ "$RUNNER_OS_NAME" != "Linux" && "$RUNNER_OS_NAME" != "macOS" ]]; then
+          echo "::error::Vettalon runs on Linux and macOS runners only (this runner is $RUNNER_OS_NAME). Use runs-on: ubuntu-latest or macos-latest."
+          exit 1
+        fi
+
+    - name: Install semgrep and gitleaks
+      if: inputs.install-scanners == 'true'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/scripts/install-scanners.sh"
+
+    - name: Install vettalon
+      shell: bash
+      env:
+        VETTALON_VERSION: ${{ inputs.version }}
+        VETTALON_INSTALL_METHOD: ${{ inputs.install-method }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/install-vettalon.sh"
+
+    - name: Run vettalon scan
+      id: scan
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_PROFILE: ${{ inputs.profile }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_GATES: ${{ inputs.gates }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_SARIF_FILE: ${{ inputs.sarif-file }}
+      run: |
+        set -uo pipefail
+        if [[ "$INPUT_SARIF_FILE" == *$'\n'* || -z "$INPUT_SARIF_FILE" ]]; then
+          echo "::error::sarif-file must be a non-empty single-line path"
+          echo "exit-code=2" >> "$GITHUB_OUTPUT"
+          echo "sarif-exists=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        args=(scan --profile "$INPUT_PROFILE" --sarif "$INPUT_SARIF_FILE")
+        if [[ -n "$INPUT_FAIL_ON" ]]; then
+          args+=(--fail-on "$INPUT_FAIL_ON")
+        fi
+        if [[ -n "$INPUT_CONFIG" ]]; then
+          args+=(--config "$INPUT_CONFIG")
+        fi
+        while IFS= read -r line || [[ -n "$line" ]]; do
+          line="${line#"${line%%[![:space:]]*}"}"
+          line="${line%"${line##*[![:space:]]}"}"
+          [[ -z "$line" || "$line" == \#* ]] && continue
+          args+=(--gate "$line")
+        done <<< "$INPUT_GATES"
+        # "--" keeps a path that starts with "-" from being read as a flag.
+        args+=(-- "$INPUT_PATH")
+
+        rm -f -- "$INPUT_SARIF_FILE"
+        echo "[vettalon-action] vettalon ${args[*]}"
+        code=0
+        vettalon "${args[@]}" || code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        if [[ -s "$INPUT_SARIF_FILE" ]]; then
+          python3 "$GITHUB_ACTION_PATH/scripts/rebase-sarif.py" \
+            "$INPUT_SARIF_FILE" "$INPUT_PATH" "$GITHUB_WORKSPACE" \
+            || echo "::warning::could not rewrite SARIF paths for $INPUT_PATH"
+          echo "sarif-file=$INPUT_SARIF_FILE" >> "$GITHUB_OUTPUT"
+          echo "sarif-exists=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::vettalon did not write a SARIF file (exit code $code)"
+          echo "sarif-file=" >> "$GITHUB_OUTPUT"
+          echo "sarif-exists=false" >> "$GITHUB_OUTPUT"
+        fi
+        # Never fail here: the SARIF upload must run first.
+        exit 0
+
+    - name: Upload SARIF to code scanning
+      if: inputs.upload-sarif == 'true' && steps.scan.outputs.sarif-exists == 'true'
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif-file }}
+        category: ${{ inputs.category }}
+
+    - name: Report scan result
+      if: always() && steps.scan.outputs.exit-code != '' && steps.scan.outputs.exit-code != '0'
+      shell: bash
+      env:
+        SCAN_EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+      run: |
+        if [[ "$SCAN_EXIT_CODE" == "1" ]]; then
+          echo "::error::Vettalon found issues at or above the fail-on threshold, or a policy gate failed (exit 1). See the scan log and the code scanning alerts."
+        else
+          echo "::error::Vettalon could not complete the scan (exit $SCAN_EXIT_CODE). See the scan log above."
+        fi
+        exit "$SCAN_EXIT_CODE"

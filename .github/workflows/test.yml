@@ -1,0 +1,133 @@
+name: Test action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+      - name: Python syntax
+        run: python3 -m py_compile scripts/rebase-sarif.py
+
+  self-test:
+    name: Self-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      # No CLI release exists yet, so the action builds vettalon from source.
+      # Cache cargo downloads and the build directory, keyed on the upstream
+      # commit, so repeat runs do not recompile everything.
+      - name: Resolve upstream vettalon commit
+        id: upstream
+        shell: bash
+        run: |
+          sha="$(git ls-remote https://github.com/zhixuli0406/vettalon.git HEAD | cut -f1)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve upstream HEAD"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ${{ runner.temp }}/vettalon-target
+          key: vettalon-src-${{ runner.os }}-${{ runner.arch }}-${{ steps.upstream.outputs.sha }}
+          restore-keys: |
+            vettalon-src-${{ runner.os }}-${{ runner.arch }}-
+
+      # Case 1: findings are reported but do not fail the job (fail-on: none).
+      - name: Run action (report only)
+        id: report
+        uses: ./
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/vettalon-target
+        with:
+          path: test/fixture
+          install-method: source
+          fail-on: none
+          sarif-file: vettalon-report.sarif
+          upload-sarif: 'false'
+
+      - name: Check report-only run
+        shell: bash
+        env:
+          EXIT_CODE: ${{ steps.report.outputs.exit-code }}
+          SARIF_FILE: ${{ steps.report.outputs.sarif-file }}
+        run: |
+          test "$EXIT_CODE" = "0" || { echo "::error::expected exit-code 0, got '$EXIT_CODE'"; exit 1; }
+          test -s "$SARIF_FILE" || { echo "::error::SARIF file '$SARIF_FILE' missing"; exit 1; }
+          python3 - "$SARIF_FILE" <<'PY'
+          import json, sys
+          doc = json.load(open(sys.argv[1]))
+          results = doc["runs"][0]["results"]
+          rules = [r["ruleId"] for r in results]
+          uris = [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] for r in results]
+          print("rules:", rules)
+          print("uris:", uris)
+          assert any(r.endswith("python-subprocess-shell-true") for r in rules), "semgrep finding missing"
+          assert "generic-api-key" in rules, "gitleaks finding missing"
+          assert all(u.startswith("test/fixture/") for u in uris), "SARIF URIs not rebased to repo root"
+          PY
+
+      # Case 2: the default fail-on (high) must fail the step, after writing SARIF.
+      - name: Run action (gate fails)
+        id: gate
+        continue-on-error: true
+        uses: ./
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/vettalon-target
+        with:
+          path: test/fixture
+          install-method: source
+          install-scanners: 'false'
+          sarif-file: vettalon-gate.sarif
+          upload-sarif: 'false'
+
+      - name: Check failing run
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.gate.outcome }}
+          EXIT_CODE: ${{ steps.gate.outputs.exit-code }}
+        run: |
+          echo "outcome=$OUTCOME exit-code=$EXIT_CODE"
+          test "$OUTCOME" = "failure" || { echo "::error::expected the gate step to fail"; exit 1; }
+          if [[ -n "$EXIT_CODE" && "$EXIT_CODE" != "1" ]]; then
+            echo "::error::expected exit-code 1, got '$EXIT_CODE'"
+            exit 1
+          fi
+          test -s vettalon-gate.sarif || { echo "::error::SARIF was not written before the failure"; exit 1; }
+
+  windows-refused:
+    name: Refuses Windows clearly
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run action on Windows
+        id: win
+        continue-on-error: true
+        uses: ./
+        with:
+          upload-sarif: 'false'
+      - name: Check it failed
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.win.outcome }}
+        run: test "$OUTCOME" = "failure"
