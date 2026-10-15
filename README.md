@@ -155,7 +155,7 @@ This action and the Vettalon CLI are free and open source (Apache-2.0). Vettalon
 - 預設遇到 high 以上的發現會讓 job 失敗，可用 `fail-on` 或 `gates` 調整。SARIF 一定會先上傳，最後一步才讓 job 失敗。
 - 只支援 Linux 和 macOS runner。
 - `profile: deep` 會加上 AI 審查，模型和 API 金鑰都要自己準備（金鑰放 GitHub secrets，設定檔寫到 `runner.temp`，不能放在被掃描的 repo 裡）。注意：deep 模式會把被審查模組的原始碼送到你設定的模型供應商。
-- CLI 還沒有正式 release 時，Action 會自動改用 `cargo install` 從原始碼編譯，需要幾分鐘。下載的 release 檔一律驗證 SHA-256，驗證不過就停止，不會安裝。
+- 預設下載 CLI 的正式 release（目前最新是 v0.1.0）；指定的版本沒有 release 檔時，才改用 `cargo install` 從原始碼編譯，需要幾分鐘。下載的 release 檔一律驗證 SHA-256，驗證不過就停止，不會安裝。
 - Action 與 CLI 都是免費開源（Apache-2.0）；付費的 Vettalon Pro 是另一個產品，這個 Action 用不到。
 
 ## License
